@@ -1,9 +1,14 @@
 Flask
 Flask-SQLAlchemy
 Flask-JWT-Extended
-pymysql
-python-dotenv
 Flask-Migrate
+python-dotenv
 gunicorn
 cryptography
-
+# Database Drivers
+pymysql
+psycopg2-binary
+# Serialization (Merged from old file)
+marshmallow
+Flask-Marshmallow
+marshmallow-sqlalchemy
