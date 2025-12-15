@@ -1,5 +1,6 @@
 from flask import Blueprint, request, jsonify
-from app import db
+from app.extensions import db
+
 from app.models import Psicologo, Paciente, Cita, Especialidad, HistorialClinico, Informe, Factura, Notificacion
 from flask_jwt_extended import jwt_required, get_jwt_identity, create_access_token
 from werkzeug.security import check_password_hash, generate_password_hash
