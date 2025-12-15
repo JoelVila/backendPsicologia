@@ -142,8 +142,12 @@ def get_notificaciones():
 def register_paciente():
     data = request.get_json()
     
+    # Si por error envían una lista ([{...}]), tomamos el primer elemento automáticamente
     if isinstance(data, list):
-        return jsonify({"msg": "Expected a JSON object, but got a list. Please remove the surrounding brackets [ ]."}), 400
+        if len(data) > 0:
+            data = data[0]
+        else:
+            return jsonify({"msg": "Empty data list"}), 400
 
     
     if Paciente.query.filter_by(correo_electronico=data.get('email')).first():
