@@ -142,6 +142,10 @@ def get_notificaciones():
 def register_paciente():
     data = request.get_json()
     
+    if isinstance(data, list):
+        return jsonify({"msg": "Expected a JSON object, but got a list. Please remove the surrounding brackets [ ]."}), 400
+
+    
     if Paciente.query.filter_by(correo_electronico=data.get('email')).first():
             return jsonify({"msg": "Email already exists"}), 400
             
