@@ -10,6 +10,8 @@ auth_bp = Blueprint('auth', __name__)
 @auth_bp.route('/login', methods=['POST'])
 def login():
     data = request.get_json()
+    if isinstance(data, list):
+        data = data[0] if len(data) > 0 else {}
     email = data.get('email')
     password = data.get('password')
     role = data.get('role') # 'psicologo' or 'paciente' - now required to know which table to check
@@ -35,6 +37,8 @@ def login():
 @auth_bp.route('/register', methods=['POST'])
 def register():
     data = request.get_json()
+    if isinstance(data, list):
+        data = data[0] if len(data) > 0 else {}
     role = data.get('role')
     
     if role == 'psicologo':
