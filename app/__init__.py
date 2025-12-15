@@ -10,12 +10,9 @@ def create_app(config_class=Config):
     # 1. Inicializar Extensiones
     init_extensions(app)
 
-    # 2. Registrar Blueprints (Se añadirán después)
-    # from app.api.paciente_routes import bp as paciente_bp
-    # app.register_blueprint(paciente_bp, url_prefix='/api/v1/pacientes')
+    # 2. Registrar Blueprints
+    from app.routes import auth_bp, main_bp
+    app.register_blueprint(auth_bp)
+    app.register_blueprint(main_bp)
 
     return app
-
-
-def models():
-    return None
