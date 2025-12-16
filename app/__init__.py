@@ -12,7 +12,7 @@ def create_app(config_class=Config):
 
     # 2. Registrar Blueprints
     from app.routes import auth_bp, main_bp
-    app.register_blueprint(auth_bp)
-    app.register_blueprint(main_bp)
+    app.register_blueprint(auth_bp, url_prefix='/auth')
+    app.register_blueprint(main_bp, url_prefix='/main')
 
     return app

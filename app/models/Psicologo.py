@@ -12,6 +12,10 @@ class Psicologo(db.Model):
     foto_psicologo = db.Column(db.String(255))
     tipo_especialidad = db.Column(db.String(100))
     cuenta_bancaria = db.Column(db.String(50))
+    # Nuevos campos de acreditación
+    numero_licencia = db.Column(db.String(50))
+    institucion = db.Column(db.String(255))
+    documento_acreditacion = db.Column(db.String(255))
 
     def __repr__(self):
         return f'<Psicologo {self.correo_electronico}>'

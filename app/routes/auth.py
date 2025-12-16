@@ -55,7 +55,10 @@ def register():
             correo_electronico=data.get('email'),
             contrasenia=generate_password_hash(data.get('password')),
             tipo_especialidad=str(data.get('especialidad_id')) if data.get('especialidad_id') else None,
-            # 'nombre' and 'telefono' are not in Psicologo model, skipping them to avoid crash
+            numero_licencia=data.get('numero_licencia'),
+            institucion=data.get('institucion'),
+            documento_acreditacion=data.get('documento_acreditacion'),
+            foto_psicologo=data.get('foto_psicologo')
         )
         db.session.add(new_user)
         
@@ -74,7 +77,8 @@ def register():
             contrasenia=generate_password_hash(data.get('password')),
             edad=data.get('edad'),
             telefono=data.get('telefono'),
-            tipo_tarjeta=data.get('tipo_tarjeta')
+            tipo_tarjeta=data.get('tipo_tarjeta'),
+            foto_paciente=data.get('foto_paciente')
             # 'tipo_paciente' is not in model, skipping
         )
         db.session.add(new_user)

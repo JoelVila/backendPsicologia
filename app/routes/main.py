@@ -1,4 +1,11 @@
 from flask import Blueprint, request, jsonify
+import base64
+import os
+import json
+try:
+    from openai import OpenAI
+except ImportError:
+    OpenAI = None
 from app.extensions import db
 
 from app.models import Psicologo, Paciente, Cita, Especialidad, HistorialClinico, Informe, Factura, Notificacion
@@ -168,6 +175,46 @@ def perfil_paciente():
         'edad': user.edad,
         'tipo_tarjeta': user.tipo_tarjeta
     }), 200
+
+# --- OCR Endpoint ---
+@main_bp.route('/analyze-document', methods=['POST'])
+def analyze_document():
+    if 'documento' not in request.files:
+         return jsonify({"msg": "No file part"}), 400
+    file = request.files['documento']
+    
+    api_key = os.environ.get("OPENAI_API_KEY")
+    
+    # Fallback if library missing or no key
+    if not api_key or not OpenAI:
+        return jsonify({
+            "numero_licencia": "MOCK-123456",
+            "institucion": "Universidad de Prueba (Mock)",
+            "msg": "Simulated OCR (No API Key or Library found)"
+        }), 200
+        
+    try:
+        client = OpenAI(api_key=api_key)
+        image_data = base64.b64encode(file.read()).decode('utf-8')
+        
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "Extract 'numero_licencia' and 'institucion' from this image. Return valid JSON."},
+                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_data}"}}
+                    ],
+                }
+            ],
+            response_format={ "type": "json_object" }
+        )
+        content = response.choices[0].message.content
+        return jsonify(json.loads(content)), 200
+        
+    except Exception as e:
+        return jsonify({"msg": f"OCR Error: {str(e)}"}), 500
 
 
 
