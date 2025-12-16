@@ -12,23 +12,25 @@ def login():
     data = request.get_json()
     if isinstance(data, list):
         data = data[0] if len(data) > 0 else {}
+    
     email = data.get('email')
     password = data.get('password')
-    role = data.get('role') # 'psicologo' or 'paciente' - now required to know which table to check
-    
+    role = data.get('role') # 'psicologo' or 'paciente'
+
     if not role:
         return jsonify({"msg": "Role is required"}), 400
 
-    user = None
     if role == 'psicologo':
-        user = Psicologo.query.filter_by(email=email).first()
-        if user and check_password_hash(user.password_hash, password):
+        user = Psicologo.query.filter_by(correo_electronico=email).first()
+        # Model has 'contrasenia', not 'password_hash'
+        if user and check_password_hash(user.contrasenia, password):
             access_token = create_access_token(identity={'id': user.id_psicologo, 'role': 'psicologo'})
             return jsonify(access_token=access_token, role='psicologo'), 200
             
     elif role == 'paciente':
         user = Paciente.query.filter_by(correo_electronico=email).first()
-        if user and check_password_hash(user.contrasena, password):
+        # Model has 'contrasenia'
+        if user and check_password_hash(user.contrasenia, password):
             access_token = create_access_token(identity={'id': user.id_paciente, 'role': 'paciente'})
             return jsonify(access_token=access_token, role='paciente'), 200
     
@@ -39,18 +41,21 @@ def register():
     data = request.get_json()
     if isinstance(data, list):
         data = data[0] if len(data) > 0 else {}
+    
     role = data.get('role')
     
     if role == 'psicologo':
-        if Psicologo.query.filter_by(email=data.get('email')).first():
+        if Psicologo.query.filter_by(correo_electronico=data.get('email')).first():
              return jsonify({"msg": "Email already exists"}), 400
         
+        # Psicologo model fields: correo_electronico, contrasenia, informe_certificacion, foto_psicologo, tipo_especialidad, cuenta_bancaria
+        # Code was sending: nombre, email, password, telefono, especialidad_id
+        # We map what we can.
         new_user = Psicologo(
-            nombre=data.get('nombre'),
-            email=data.get('email'),
-            password_hash=generate_password_hash(data.get('password')),
-            telefono=data.get('telefono'),
-            especialidad_id=data.get('especialidad_id')
+            correo_electronico=data.get('email'),
+            contrasenia=generate_password_hash(data.get('password')),
+            tipo_especialidad=str(data.get('especialidad_id')) if data.get('especialidad_id') else None,
+            # 'nombre' and 'telefono' are not in Psicologo model, skipping them to avoid crash
         )
         db.session.add(new_user)
         
@@ -58,15 +63,19 @@ def register():
         if Paciente.query.filter_by(correo_electronico=data.get('email')).first():
              return jsonify({"msg": "Email already exists"}), 400
              
+        # Paciente model: correo_electronico, contrasenia, nombre_completo, edad, telefono, foto_paciente, tipo_tarjeta
+        nombre = data.get('nombre', '')
+        apellido = data.get('apellido', '')
+        nombre_completo = f"{nombre} {apellido}".strip()
+
         new_user = Paciente(
-            nombre=data.get('nombre'),
+            nombre_completo=nombre_completo,
             correo_electronico=data.get('email'),
-            contrasena=generate_password_hash(data.get('password')),
-            apellido=data.get('apellido'),
+            contrasenia=generate_password_hash(data.get('password')),
             edad=data.get('edad'),
             telefono=data.get('telefono'),
-            tipo_paciente=data.get('tipo_paciente'),
             tipo_tarjeta=data.get('tipo_tarjeta')
+            # 'tipo_paciente' is not in model, skipping
         )
         db.session.add(new_user)
     else:

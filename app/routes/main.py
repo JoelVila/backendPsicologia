@@ -10,17 +10,20 @@ import json
 main_bp = Blueprint('main', __name__)
 
 # --- Psicologos ---
+# --- Psicologos ---
 @main_bp.route('/psicologos', methods=['GET'])
 @jwt_required()
 def get_psicologos():
     psicologos = Psicologo.query.all()
     result = []
     for p in psicologos:
+        # Model Psicologo lacks 'nombre' and 'especialidad_ref'. Using correo and raw field if available.
+        # Assuming 'especialidad_ref' might not exist either, safely checking.
         result.append({
             'id_psicologo': p.id_psicologo,
-            'nombre': p.nombre,
-            'email': p.email,
-            'especialidad': p.especialidad_ref.nombre if p.especialidad_ref else None
+            'nombre': p.correo_electronico, # Fallback since nombre doesn't exist
+            'email': p.correo_electronico,
+            'especialidad': p.tipo_especialidad # Using correct field from model
         })
     return jsonify(result), 200
 
@@ -137,50 +140,9 @@ def get_notificaciones():
     result = [{'mensaje': n.mensaje, 'leida': n.leida} for n in notificaciones]
     return jsonify(result), 200
 
-# --- Auth (Paciente) ---
-@main_bp.route('/register_paciente', methods=['POST'])
-def register_paciente():
-    data = request.get_json()
-    
-    # Si por error envían una lista ([{...}]), tomamos el primer elemento automáticamente
-    if isinstance(data, list):
-        if len(data) > 0:
-            data = data[0]
-        else:
-            return jsonify({"msg": "Empty data list"}), 400
+# --- Auth (Managed in auth.py) ---
+# Previous 'register_paciente' and 'login_paciente' removed to avoid duplication.
 
-    
-    if Paciente.query.filter_by(correo_electronico=data.get('email')).first():
-            return jsonify({"msg": "Email already exists"}), 400
-            
-    new_user = Paciente(
-        nombre=data.get('nombre'),
-        correo_electronico=data.get('email'),
-        contrasena=generate_password_hash(data.get('password')),
-        apellido=data.get('apellido'),
-        edad=data.get('edad'),
-        telefono=data.get('telefono'),
-        tipo_paciente=data.get('tipo_paciente'),
-        tipo_tarjeta=data.get('tipo_tarjeta')
-    )
-    db.session.add(new_user)
-    db.session.commit()
-    
-    return jsonify({"msg": "Paciente created successfully"}), 201
-
-@main_bp.route('/login_paciente', methods=['POST'])
-def login_paciente():
-    data = request.get_json()
-    email = data.get('email')
-    password = data.get('password')
-    
-    user = Paciente.query.filter_by(correo_electronico=email).first()
-    if user and check_password_hash(user.contrasena, password):
-        identity_dict = {'id': user.id_paciente, 'role': 'paciente'}
-        access_token = create_access_token(identity=json.dumps(identity_dict))
-        return jsonify(access_token=access_token, role='paciente'), 200
-    
-    return jsonify({"msg": "Bad username or password"}), 401
 
 @main_bp.route('/perfil_paciente', methods=['GET'])
 @jwt_required()
@@ -200,12 +162,11 @@ def perfil_paciente():
         
     return jsonify({
         'id': user.id_paciente,
-        'nombre': user.nombre,
-        'apellido': user.apellido,
+        'nombre_completo': user.nombre_completo,
         'email': user.correo_electronico,
         'telefono': user.telefono,
         'edad': user.edad,
-        'tipo_paciente': user.tipo_paciente
+        'tipo_tarjeta': user.tipo_tarjeta
     }), 200
 
 
