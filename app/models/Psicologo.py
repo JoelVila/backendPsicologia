@@ -1,5 +1,6 @@
 # app/models/psicologo.py
 from app.extensions import db
+from app.models.Especialidad import psicologo_especialidad
 
 
 class Psicologo(db.Model):
@@ -10,12 +11,14 @@ class Psicologo(db.Model):
     contrasenia = db.Column(db.String(256), nullable=False)  # Hash de contraseña
     informe_certificacion = db.Column(db.String(255))
     foto_psicologo = db.Column(db.String(255))
-    tipo_especialidad = db.Column(db.String(100))
     cuenta_bancaria = db.Column(db.String(50))
     # Nuevos campos de acreditación
     numero_licencia = db.Column(db.String(50))
     institucion = db.Column(db.String(255))
     documento_acreditacion = db.Column(db.String(255))
+    
+    # Relationships (many-to-many with Especialidad)
+    especialidades = db.relationship('Especialidad', secondary=psicologo_especialidad, back_populates='psicologos', lazy=True)
 
     def __repr__(self):
         return f'<Psicologo {self.correo_electronico}>'

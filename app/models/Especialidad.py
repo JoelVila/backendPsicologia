@@ -2,17 +2,21 @@
 from app.extensions import db
 
 
+# Association table for many-to-many relationship between Psicologo and Especialidad
+psicologo_especialidad = db.Table('psicologo_especialidad',
+    db.Column('psicologo_id', db.Integer, db.ForeignKey('psicologo.id_psicologo'), primary_key=True),
+    db.Column('especialidad_id', db.Integer, db.ForeignKey('especialidad.id'), primary_key=True)
+)
+
+
 class Especialidad(db.Model):
     __tablename__ = 'especialidad'
 
-    # Se usa una clave compuesta según el diagrama (id_especialidad y tipo_especialidad)
-    # Sin embargo, id_especialidad es más común para ser PK única.
-    # Usaremos solo id_especialidad como PK y combinaremos las claves en el modelo
-    id_especialidad = db.Column(db.Integer, primary_key=True)
-    # FK:
-    id_psicologo = db.Column(db.Integer)
-
-    tipo_especialidad = db.Column(db.String(100))
+    id = db.Column(db.Integer, primary_key=True)
+    nombre = db.Column(db.String(100), unique=True, nullable=False)
+    
+    # Relationship (many-to-many)
+    psicologos = db.relationship('Psicologo', secondary=psicologo_especialidad, back_populates='especialidades', lazy=True)
 
     def __repr__(self):
-        return f'<Especialidad {self.tipo_especialidad}>'
+        return f'<Especialidad {self.nombre}>'
