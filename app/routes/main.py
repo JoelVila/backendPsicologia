@@ -1,14 +1,6 @@
 from flask import Blueprint, request, jsonify
-import base64
-import os
-import json
-try:
-    from openai import OpenAI
-except ImportError:
-    OpenAI = None
-from app.extensions import db
-
-from app.models import Psicologo, Paciente, Cita, Especialidad, HistorialClinico, Informe, Factura, Notificacion
+from app import db
+from app.models import Psicologo, Paciente, Cita, Especialidad, HistorialClinico, Informe, Factura, Notificacion, Resena
 from flask_jwt_extended import jwt_required, get_jwt_identity, create_access_token
 from werkzeug.security import check_password_hash, generate_password_hash
 from datetime import datetime
@@ -17,22 +9,368 @@ import json
 main_bp = Blueprint('main', __name__)
 
 # --- Psicologos ---
-# --- Psicologos ---
 @main_bp.route('/psicologos', methods=['GET'])
 @jwt_required()
 def get_psicologos():
     psicologos = Psicologo.query.all()
     result = []
     for p in psicologos:
-        # Model Psicologo lacks 'nombre' and 'especialidad_ref'. Using correo and raw field if available.
-        # Assuming 'especialidad_ref' might not exist either, safely checking.
         result.append({
             'id_psicologo': p.id_psicologo,
-            'nombre': p.correo_electronico, # Fallback since nombre doesn't exist
-            'email': p.correo_electronico,
-            'especialidad': p.tipo_especialidad # Using correct field from model
+            'nombre': p.nombre,
+            'email': p.email,
+            'especialidad': p.especialidad_ref.nombre if p.especialidad_ref else None
         })
     return jsonify(result), 200
+
+# --- Enhanced Psicologos Search (Public) ---
+@main_bp.route('/psicologos/search', methods=['GET'])
+def search_psicologos():
+    """
+    Public endpoint to search psychologists with enhanced data
+    Query params:
+    - q: search query (searches in nombre and bio)
+    - especialidad: filter by specialty name
+    - precio_max: maximum price filter
+    """
+    query = Psicologo.query
+    
+    # Search by name or bio
+    search_query = request.args.get('q', '').strip()
+    if search_query:
+        query = query.filter(
+            db.or_(
+                Psicologo.nombre.ilike(f'%{search_query}%'),
+                Psicologo.bio.ilike(f'%{search_query}%')
+            )
+        )
+    
+    # Filter by specialty
+    especialidad_param = request.args.get('especialidad', '').strip()
+    if especialidad_param:
+        query = query.join(Psicologo.especialidades).filter(
+            Especialidad.nombre.ilike(f'%{especialidad_param}%')
+        )
+    
+    # Filter by maximum price
+    precio_max = request.args.get('precio_max')
+    if precio_max:
+        try:
+            precio_max = float(precio_max)
+            query = query.filter(
+                db.or_(
+                    Psicologo.precio_presencial <= precio_max,
+                    Psicologo.precio_online <= precio_max
+                )
+            )
+        except ValueError:
+            pass
+    
+    psicologos = query.all()
+    
+    result = []
+    for p in psicologos:
+        # Get rating and review count
+        rating_promedio = p.get_rating_promedio()
+        num_resenas = p.get_num_resenas()
+        
+        # Get all specialties
+        especialidades_list = [esp.nombre for esp in p.especialidades]
+        
+        result.append({
+            'id_psicologo': p.id_psicologo,
+            'nombre': p.nombre,
+            'foto_perfil': p.foto_perfil,
+            'verificado': p.verificado,
+            'rating_promedio': round(rating_promedio, 1) if rating_promedio else None,
+            'num_resenas': num_resenas,
+            'bio': p.bio,
+            'especialidades': especialidades_list,
+            'precio_presencial': p.precio_presencial,
+            'precio_online': p.precio_online,
+            'anios_experiencia': p.anios_experiencia,
+            'email': p.email,
+            'telefono': p.telefono
+        })
+    
+    return jsonify(result), 200
+
+
+# --- Get Psychologist Availability by Date (Public) ---
+@main_bp.route('/psicologos/<int:id_psicologo>/disponibilidad', methods=['GET'])
+def get_disponibilidad_psicologo(id_psicologo):
+    """
+    Get available time slots for a psychologist on a specific date
+    Query params:
+    - fecha: date in format YYYY-MM-DD (required)
+    Returns: list of available hours
+    """
+    # Verificar que el psicólogo existe
+    psicologo = Psicologo.query.get(id_psicologo)
+    if not psicologo:
+        return jsonify({"msg": "Psicólogo no encontrado"}), 404
+    
+    # Obtener fecha del query param
+    fecha_str = request.args.get('fecha')
+    if not fecha_str:
+        return jsonify({"msg": "Parámetro 'fecha' es requerido (formato: YYYY-MM-DD)"}), 400
+    
+    try:
+        fecha_consulta = datetime.strptime(fecha_str, '%Y-%m-%d').date()
+    except ValueError:
+        return jsonify({"msg": "Formato de fecha inválido. Use YYYY-MM-DD"}), 400
+    
+    # Verificar que la fecha no sea en el pasado
+    from datetime import date
+    if fecha_consulta < date.today():
+        return jsonify({"msg": "No se pueden agendar citas en fechas pasadas"}), 400
+    
+    # Horarios de trabajo típicos (puedes ajustar según necesites)
+    # Por ahora usamos un horario fijo, pero esto podría venir de una tabla de disponibilidad
+    horarios_trabajo = [
+        "09:00", "10:00", "11:00", "12:00",
+        "14:00", "15:00", "16:00", "17:00", "18:00", "19:00"
+    ]
+    
+    # Obtener citas ya agendadas para ese psicólogo en esa fecha
+    citas_ocupadas = Cita.query.filter_by(
+        id_psicologo=id_psicologo,
+        fecha=fecha_consulta
+    ).filter(
+        Cita.estado.in_(['pendiente', 'confirmada', 'programada', 'en_curso'])
+    ).all()
+    
+    # Extraer las horas ocupadas
+    horas_ocupadas = [str(cita.hora)[0:5] for cita in citas_ocupadas]  # Formato HH:MM
+    
+    # Filtrar horarios disponibles
+    horarios_disponibles = [h for h in horarios_trabajo if h not in horas_ocupadas]
+    
+    return jsonify({
+        "fecha": fecha_str,
+        "psicologo_id": id_psicologo,
+        "psicologo_nombre": psicologo.nombre,
+        "horarios_disponibles": horarios_disponibles,
+        "total_disponibles": len(horarios_disponibles)
+    }), 200
+
+
+# --- Book Appointment (Authenticated) ---
+@main_bp.route('/citas/agendar', methods=['POST'])
+@jwt_required()
+def agendar_cita():
+    """
+    Book an appointment with automatic validation and price calculation
+    Body: {
+        "id_psicologo": 1,
+        "fecha": "2026-01-15",
+        "hora": "10:00",
+        "tipo_cita": "videollamada"  // "presencial", "videollamada", "chat"
+    }
+    """
+    current_user = get_jwt_identity()
+    
+    # Parse JSON if needed
+    if isinstance(current_user, str):
+        try:
+            current_user = json.loads(current_user)
+        except:
+            pass
+    
+    # Verificar que es un paciente
+    if not isinstance(current_user, dict) or current_user.get('role') != 'paciente':
+        return jsonify({"msg": "Solo pacientes pueden agendar citas"}), 403
+    
+    data = request.get_json()
+    
+    # Validar campos requeridos
+    required_fields = ['id_psicologo', 'fecha', 'hora', 'tipo_cita']
+    for field in required_fields:
+        if field not in data:
+            return jsonify({"msg": f"Campo '{field}' es requerido"}), 400
+    
+    # Validar psicólogo existe
+    psicologo = Psicologo.query.get(data['id_psicologo'])
+    if not psicologo:
+        return jsonify({"msg": "Psicólogo no encontrado"}), 404
+    
+    # Validar y parsear fecha/hora
+    try:
+        fecha_cita = datetime.strptime(data['fecha'], '%Y-%m-%d').date()
+        hora_cita = datetime.strptime(data['hora'], '%H:%M').time()
+    except ValueError:
+        return jsonify({"msg": "Formato de fecha u hora inválido"}), 400
+    
+    # Validar que la fecha no sea en el pasado
+    from datetime import date
+    if fecha_cita < date.today():
+        return jsonify({"msg": "No se pueden agendar citas en fechas pasadas"}), 400
+    
+    # Validar tipo de cita
+    tipos_validos = ['presencial', 'videollamada', 'chat']
+    if data['tipo_cita'] not in tipos_validos:
+        return jsonify({"msg": f"Tipo de cita debe ser uno de: {', '.join(tipos_validos)}"}), 400
+    
+    # Verificar disponibilidad (no hay otra cita a esa hora)
+    cita_existente = Cita.query.filter_by(
+        id_psicologo=data['id_psicologo'],
+        fecha=fecha_cita,
+        hora=hora_cita
+    ).filter(
+        Cita.estado.in_(['pendiente', 'confirmada', 'programada', 'en_curso'])
+    ).first()
+    
+    if cita_existente:
+        return jsonify({"msg": "El horario seleccionado ya no está disponible"}), 409
+    
+    # Calcular precio automáticamente según tipo de cita
+    precio_map = {
+        'presencial': psicologo.precio_presencial,
+        'videollamada': psicologo.precio_online,
+        'chat': psicologo.precio_chat
+    }
+    precio_cita = precio_map.get(data['tipo_cita'])
+    
+    if precio_cita is None:
+        return jsonify({"msg": f"El psicólogo no tiene configurado el precio para {data['tipo_cita']}"}), 400
+    
+    # Crear la cita
+    nueva_cita = Cita(
+        fecha=fecha_cita,
+        hora=hora_cita,
+        id_psicologo=data['id_psicologo'],
+        id_paciente=current_user['id'],
+        tipo_cita=data['tipo_cita'],
+        precio_cita=precio_cita,
+        estado='pendiente'
+    )
+    
+    db.session.add(nueva_cita)
+    db.session.commit()
+    
+    return jsonify({
+        "msg": "Cita agendada exitosamente",
+        "cita": {
+            "id": nueva_cita.id,
+            "fecha": str(nueva_cita.fecha),
+            "hora": str(nueva_cita.hora),
+            "tipo_cita": nueva_cita.tipo_cita,
+            "precio": nueva_cita.precio_cita,
+            "estado": nueva_cita.estado,
+            "psicologo": {
+                "id": psicologo.id_psicologo,
+                "nombre": psicologo.nombre
+            }
+        }
+    }), 201
+
+
+# --- Update Psychologist Profile (Authenticated) ---
+@main_bp.route('/psicologos/perfil', methods=['PUT'])
+@jwt_required()
+def update_perfil_psicologo():
+    """
+    Endpoint for psychologists to update their profile
+    Used for initial configuration (pricing, bank account) and profile updates
+    """
+    current_user = get_jwt_identity()
+    
+    # Verificar que es un psicólogo
+    if not isinstance(current_user, dict) or current_user.get('role') != 'psicologo':
+        return jsonify({"msg": "Acceso denegado - Solo psicólogos"}), 403
+    
+    psicologo = Psicologo.query.get(current_user['id'])
+    if not psicologo:
+        return jsonify({"msg": "Psicólogo no encontrado"}), 404
+    
+    data = request.get_json()
+    
+    # Actualizar tarifas
+    if 'precio_presencial' in data:
+        psicologo.precio_presencial = data['precio_presencial']
+    if 'precio_online' in data:
+        psicologo.precio_online = data['precio_online']
+    if 'precio_chat' in data:
+        psicologo.precio_chat = data['precio_chat']
+    
+    # Actualizar información bancaria
+    if 'numero_cuenta' in data:
+        psicologo.numero_cuenta = data.get('numero_cuenta')
+    if 'banco' in data:
+        psicologo.banco = data.get('banco')
+    if 'titular_cuenta' in data:
+        psicologo.titular_cuenta = data.get('titular_cuenta')
+    
+    # Actualizar información de perfil
+    if 'bio' in data:
+        psicologo.bio = data['bio']
+    if 'foto_perfil' in data:
+        psicologo.foto_perfil = data['foto_perfil']
+    if 'anios_experiencia' in data:
+        psicologo.anios_experiencia = data['anios_experiencia']
+    if 'telefono' in data:
+        psicologo.telefono = data['telefono']
+    
+    # Actualizar especialidades (si se envían)
+    if 'especialidades' in data:
+        # Clear existing specialties
+        psicologo.especialidades.clear()
+        
+        # Add new specialties
+        especialidad_ids = data['especialidades']  # List of specialty IDs
+        for esp_id in especialidad_ids:
+            especialidad = Especialidad.query.get(esp_id)
+            if especialidad:
+                psicologo.especialidades.append(especialidad)
+    
+    db.session.commit()
+    
+    return jsonify({
+        "msg": "Perfil actualizado correctamente",
+        "psicologo": {
+            "id_psicologo": psicologo.id_psicologo,
+            "nombre": psicologo.nombre,
+            "email": psicologo.email,
+            "precio_presencial": psicologo.precio_presencial,
+            "precio_online": psicologo.precio_online,
+            "precio_chat": psicologo.precio_chat
+        }
+    }), 200
+
+
+# --- Get Psychologist Own Profile (Authenticated) ---
+@main_bp.route('/psicologos/perfil', methods=['GET'])
+@jwt_required()
+def get_perfil_psicologo():
+    """
+    Get the authenticated psychologist's own profile
+    """
+    current_user = get_jwt_identity()
+    
+    if not isinstance(current_user, dict) or current_user.get('role') != 'psicologo':
+        return jsonify({"msg": "Acceso denegado"}), 403
+    
+    psicologo = Psicologo.query.get(current_user['id'])
+    if not psicologo:
+        return jsonify({"msg": "Psicólogo no encontrado"}), 404
+    
+    return jsonify({
+        "id_psicologo": psicologo.id_psicologo,
+        "nombre": psicologo.nombre,
+        "email": psicologo.email,
+        "telefono": psicologo.telefono,
+        "bio": psicologo.bio,
+        "foto_perfil": psicologo.foto_perfil,
+        "verificado": psicologo.verificado,
+        "anios_experiencia": psicologo.anios_experiencia,
+        "precio_presencial": psicologo.precio_presencial,
+        "precio_online": psicologo.precio_online,
+        "precio_chat": psicologo.precio_chat,
+        "numero_cuenta": psicologo.numero_cuenta,
+        "banco": psicologo.banco,
+        "titular_cuenta": psicologo.titular_cuenta,
+        "especialidades": [{"id": e.id, "nombre": e.nombre} for e in psicologo.especialidades]
+    }), 200
 
 # --- Citas ---
 @main_bp.route('/citas', methods=['POST'])
@@ -71,6 +409,149 @@ def get_citas():
         })
     return jsonify(result), 200
 
+# --- Get Psychologist's Appointments (Authenticated) ---
+@main_bp.route('/psicologos/citas', methods=['GET'])
+@jwt_required()
+def get_citas_psicologo():
+    """
+    Get appointments for the authenticated psychologist
+    Query params:
+    - estado: 'proximas' or 'historial' (default: proximas)
+    """
+    current_user = get_jwt_identity()
+    
+    # Verificar que es un psicólogo
+    if not isinstance(current_user, dict) or current_user.get('role') != 'psicologo':
+        return jsonify({"msg": "Acceso denegado - Solo psicólogos"}), 403
+    
+    psicologo_id = current_user['id']
+    
+    # Filtrar por estado (próximas o historial)
+    filtro_estado = request.args.get('estado', 'proximas').lower()
+    
+    # Query base: citas del psicólogo autenticado
+    query = Cita.query.filter_by(id_psicologo=psicologo_id)
+    
+    # Filtrar por estado
+    if filtro_estado == 'proximas':
+        # Citas pendientes o en curso, ordenadas por fecha ascendente
+        query = query.filter(
+            db.or_(
+                Cita.estado == 'pendiente',
+                Cita.estado == 'confirmada',
+                Cita.estado == 'en_curso'
+            )
+        ).order_by(Cita.fecha.asc(), Cita.hora.asc())
+    elif filtro_estado == 'historial':
+        # Citas completadas o canceladas, ordenadas por fecha descendente
+        query = query.filter(
+            db.or_(
+                Cita.estado == 'completada',
+                Cita.estado == 'cancelada'
+            )
+        ).order_by(Cita.fecha.desc(), Cita.hora.desc())
+    
+    citas = query.all()
+    
+    result = []
+    for cita in citas:
+        # Get patient info
+        paciente = cita.paciente
+        
+        result.append({
+            'id_cita': cita.id,
+            'fecha': str(cita.fecha),
+            'hora': str(cita.hora),
+            'estado': cita.estado,
+            'tipo_cita': cita.tipo_cita,  # 'videollamada', 'chat', 'presencial'
+            'precio': cita.precio_cita,
+            'paciente': {
+                'id': paciente.id_paciente,
+                'nombre': paciente.nombre,
+                'apellido': paciente.apellido,
+                'email': paciente.email,
+                'telefono': paciente.telefono
+            }
+        })
+    
+    return jsonify(result), 200
+
+# --- Get Patient's Appointments (Authenticated) ---
+@main_bp.route('/pacientes/citas', methods=['GET'])
+@jwt_required()
+def get_citas_paciente():
+    """
+    Get appointments for the authenticated patient
+    Query params:
+    - estado: 'proximas' or 'historial' (default: proximas)
+    """
+    current_user = get_jwt_identity()
+    
+    # Parse JSON if it's a string
+    if isinstance(current_user, str):
+        try:
+            current_user = json.loads(current_user)
+        except:
+            pass
+    
+    # Verificar que es un paciente
+    if not isinstance(current_user, dict) or current_user.get('role') != 'paciente':
+        return jsonify({"msg": "Acceso denegado - Solo pacientes"}), 403
+    
+    paciente_id = current_user['id']
+    
+    # Filtrar por estado (próximas o historial)
+    filtro_estado = request.args.get('estado', 'proximas').lower()
+    
+    # Query base: citas del paciente autenticado
+    query = Cita.query.filter_by(id_paciente=paciente_id)
+    
+    # Filtrar por estado
+    if filtro_estado == 'proximas':
+        # Citas pendientes o en curso, ordenadas por fecha ascendente
+        query = query.filter(
+            db.or_(
+                Cita.estado == 'pendiente',
+                Cita.estado == 'confirmada',
+                Cita.estado == 'programada',
+                Cita.estado == 'en_curso'
+            )
+        ).order_by(Cita.fecha.asc(), Cita.hora.asc())
+    elif filtro_estado == 'historial':
+        # Citas completadas o canceladas, ordenadas por fecha descendente
+        query = query.filter(
+            db.or_(
+                Cita.estado == 'completada',
+                Cita.estado == 'cancelada'
+            )
+        ).order_by(Cita.fecha.desc(), Cita.hora.desc())
+    
+    citas = query.all()
+    
+    result = []
+    for cita in citas:
+        # Get psychologist info
+        psicologo = cita.psicologo
+        
+        result.append({
+            'id_cita': cita.id,
+            'fecha': str(cita.fecha),
+            'hora': str(cita.hora),
+            'estado': cita.estado,
+            'tipo_cita': cita.tipo_cita,  # 'videollamada', 'chat', 'presencial'
+            'precio': cita.precio_cita,
+            'psicologo': {
+                'id': psicologo.id_psicologo,
+                'nombre': psicologo.nombre,
+                'foto_perfil': psicologo.foto_perfil,
+                'email': psicologo.email,
+                'telefono': psicologo.telefono,
+                'especialidades': [esp.nombre for esp in psicologo.especialidades]
+            }
+        })
+    
+    return jsonify(result), 200
+
 # --- Historial Clinico ---
 @main_bp.route('/historial/<int:paciente_id>', methods=['GET'])
 @jwt_required()
@@ -101,18 +582,199 @@ def update_historial():
     return jsonify({"msg": "Historial updated"}), 200
 
 # --- Informes ---
-@main_bp.route('/informes', methods=['POST'])
+
+# Get Patient's Reports (Authenticated - Patients only)
+@main_bp.route('/pacientes/informes', methods=['GET'])
+@jwt_required()
+def get_informes_paciente():
+    """
+    Get all session reports for the authenticated patient
+    """
+    current_user = get_jwt_identity()
+    
+    # Parse JSON if needed
+    if isinstance(current_user, str):
+        try:
+            current_user = json.loads(current_user)
+        except:
+            pass
+    
+    # Verificar que es un paciente
+    if not isinstance(current_user, dict) or current_user.get('role') != 'paciente':
+        return jsonify({"msg": "Acceso denegado - Solo pacientes"}), 403
+    
+    paciente_id = current_user['id']
+    
+    # Obtener todos los informes del paciente, ordenados por fecha descendente
+    informes = Informe.query.filter_by(
+        id_paciente=paciente_id
+    ).order_by(Informe.fecha_creacion.desc()).all()
+    
+    result = []
+    for informe in informes:
+        psicologo = informe.psicologo
+        
+        # Try to find associated cita (appointment) - this is a limitation since Informe doesn't have id_cita
+        # For now, we'll return basic info
+        result.append({
+            'id_informe': informe.id_informe,
+            'psicologo': {
+                'id': psicologo.id_psicologo,
+                'nombre': psicologo.nombre,
+                'foto_perfil': psicologo.foto_perfil,
+                'especialidades': [esp.nombre for esp in psicologo.especialidades]
+            },
+            'contenido': informe.contenido,
+            'fecha_creacion': informe.fecha_creacion.strftime('%Y-%m-%d %H:%M:%S'),
+            'fecha_modificacion': informe.fecha_modificacion.strftime('%Y-%m-%d %H:%M:%S') if informe.fecha_modificacion else None
+        })
+    
+    return jsonify(result), 200
+
+
+# Get Psychologist's Reports (Authenticated - Psychologists only)
+@main_bp.route('/psicologos/informes', methods=['GET'])
+@jwt_required()
+def get_informes_psicologo():
+    """
+    Get all reports created by the authenticated psychologist
+    """
+    current_user = get_jwt_identity()
+    
+    # Verificar que es un psicólogo
+    if not isinstance(current_user, dict) or current_user.get('role') != 'psicologo':
+        return jsonify({"msg": "Acceso denegado - Solo psicólogos"}), 403
+    
+    psicologo_id = current_user['id']
+    
+    # Obtener todos los informes creados por el psicólogo
+    informes = Informe.query.filter_by(
+        id_psicologo=psicologo_id
+    ).order_by(Informe.fecha_creacion.desc()).all()
+    
+    result = []
+    for informe in informes:
+        paciente = informe.paciente
+        
+        result.append({
+            'id_informe': informe.id_informe,
+            'paciente': {
+                'id': paciente.id_paciente,
+                'nombre': paciente.nombre,
+                'apellido': paciente.apellido,
+                'email': paciente.email
+            },
+            'contenido': informe.contenido,
+            'fecha_creacion': informe.fecha_creacion.strftime('%Y-%m-%d %H:%M:%S'),
+            'fecha_modificacion': informe.fecha_modificacion.strftime('%Y-%m-%d %H:%M:%S') if informe.fecha_modificacion else None
+        })
+    
+    return jsonify(result), 200
+
+
+# Get Specific Report Details
+@main_bp.route('/informes/<int:id_informe>', methods=['GET'])
+@jwt_required()
+def get_informe_detalle(id_informe):
+    """
+    Get details of a specific report
+    Access control: Only the patient or psychologist involved can view
+    """
+    current_user = get_jwt_identity()
+    
+    # Parse JSON if needed
+    if isinstance(current_user, str):
+        try:
+            current_user = json.loads(current_user)
+        except:
+            pass
+    
+    informe = Informe.query.get(id_informe)
+    if not informe:
+        return jsonify({"msg": "Informe no encontrado"}), 404
+    
+    # Verificar permisos de acceso
+    user_id = current_user.get('id')
+    user_role = current_user.get('role')
+    
+    can_access = False
+    if user_role == 'paciente' and informe.id_paciente == user_id:
+        can_access = True
+    elif user_role == 'psicologo' and informe.id_psicologo == user_id:
+        can_access = True
+    
+    if not can_access:
+        return jsonify({"msg": "Acceso denegado a este informe"}), 403
+    
+    psicologo = informe.psicologo
+    paciente = informe.paciente
+    
+    return jsonify({
+        'id_informe': informe.id_informe,
+        'psicologo': {
+            'id': psicologo.id_psicologo,
+            'nombre': psicologo.nombre,
+            'foto_perfil': psicologo.foto_perfil,
+            'especialidades': [esp.nombre for esp in psicologo.especialidades]
+        },
+        'paciente': {
+            'id': paciente.id_paciente,
+            'nombre': paciente.nombre,
+            'apellido': paciente.apellido
+        },
+        'contenido': informe.contenido,
+        'fecha_creacion': informe.fecha_creacion.strftime('%Y-%m-%d %H:%M:%S'),
+        'fecha_modificacion': informe.fecha_modificacion.strftime('%Y-%m-%d %H:%M:%S') if informe.fecha_modificacion else None
+    }), 200
+
+
+# Create Report (Psychologists only)
+@main_bp.route('/psicologos/informes', methods=['POST'])
 @jwt_required()
 def create_informe():
+    """
+    Psychologist creates a session report for a patient
+    Body: {
+        "id_paciente": 1,
+        "contenido": "Session notes, diagnosis, progress evaluation..."
+    }
+    """
+    current_user = get_jwt_identity()
+    
+    # Verificar que es un psicólogo
+    if not isinstance(current_user, dict) or current_user.get('role') != 'psicologo':
+        return jsonify({"msg": "Solo psicólogos pueden crear informes"}), 403
+    
     data = request.get_json()
+    
+    # Validar campos requeridos
+    if 'id_paciente' not in data or 'contenido' not in data:
+        return jsonify({"msg": "Campos 'id_paciente' y 'contenido' son requeridos"}), 400
+    
+    # Verificar que el paciente existe
+    paciente = Paciente.query.get(data['id_paciente'])
+    if not paciente:
+        return jsonify({"msg": "Paciente no encontrado"}), 404
+    
+    # Crear el informe
     new_informe = Informe(
         id_paciente=data['id_paciente'],
-        id_psicologo=data['id_psicologo'],
+        id_psicologo=current_user['id'],
         contenido=data['contenido']
     )
+    
     db.session.add(new_informe)
     db.session.commit()
-    return jsonify({"msg": "Informe created"}), 201
+    
+    return jsonify({
+        "msg": "Informe creado exitosamente",
+        "informe": {
+            "id_informe": new_informe.id_informe,
+            "id_paciente": new_informe.id_paciente,
+            "id_psicologo": new_informe.id_psicologo,
+            "fecha_creacion": new_informe.fecha_creacion.strftime('%Y-%m-%d %H:%M:%S')
+        }
+    }), 201
 
 # --- Facturas ---
 @main_bp.route('/facturas', methods=['POST'])
@@ -147,9 +809,42 @@ def get_notificaciones():
     result = [{'mensaje': n.mensaje, 'leida': n.leida} for n in notificaciones]
     return jsonify(result), 200
 
-# --- Auth (Managed in auth.py) ---
-# Previous 'register_paciente' and 'login_paciente' removed to avoid duplication.
+# --- Auth (Paciente) ---
+@main_bp.route('/register_paciente', methods=['POST'])
+def register_paciente():
+    data = request.get_json()
+    
+    if Paciente.query.filter_by(email=data.get('email')).first():
+            return jsonify({"msg": "Email already exists"}), 400
+            
+    new_user = Paciente(
+        nombre=data.get('nombre'),
+        email=data.get('email'),
+        password_hash=generate_password_hash(data.get('password')),
+        apellido=data.get('apellido'),
+        edad=data.get('edad'),
+        telefono=data.get('telefono'),
+        tipo_paciente=data.get('tipo_paciente'),
+        tipo_tarjeta=data.get('tipo_tarjeta')
+    )
+    db.session.add(new_user)
+    db.session.commit()
+    
+    return jsonify({"msg": "Paciente created successfully"}), 201
 
+@main_bp.route('/login_paciente', methods=['POST'])
+def login_paciente():
+    data = request.get_json()
+    email = data.get('email')
+    password = data.get('password')
+    
+    user = Paciente.query.filter_by(email=email).first()
+    if user and check_password_hash(user.password_hash, password):
+        identity_dict = {'id': user.id_paciente, 'role': 'paciente'}
+        access_token = create_access_token(identity=json.dumps(identity_dict))
+        return jsonify(access_token=access_token, role='paciente'), 200
+    
+    return jsonify({"msg": "Bad username or password"}), 401
 
 @main_bp.route('/perfil_paciente', methods=['GET'])
 @jwt_required()
@@ -169,52 +864,81 @@ def perfil_paciente():
         
     return jsonify({
         'id': user.id_paciente,
-        'nombre_completo': user.nombre_completo,
-        'email': user.correo_electronico,
+        'nombre': user.nombre,
+        'apellido': user.apellido,
+        'email': user.email,
         'telefono': user.telefono,
         'edad': user.edad,
-        'tipo_tarjeta': user.tipo_tarjeta
+        'fecha_nacimiento': str(user.fecha_nacimiento) if user.fecha_nacimiento else None,
+        'tipo_paciente': user.tipo_paciente
     }), 200
 
-# --- OCR Endpoint ---
-@main_bp.route('/analyze-document', methods=['POST'])
-def analyze_document():
-    if 'documento' not in request.files:
-         return jsonify({"msg": "No file part"}), 400
-    file = request.files['documento']
-    
-    api_key = os.environ.get("OPENAI_API_KEY")
-    
-    # Fallback if library missing or no key
-    if not api_key or not OpenAI:
-        return jsonify({
-            "numero_licencia": "MOCK-123456",
-            "institucion": "Universidad de Prueba (Mock)",
-            "msg": "Simulated OCR (No API Key or Library found)"
-        }), 200
-        
+
+# Update Patient Profile
+@main_bp.route('/pacientes/perfil', methods=['PUT'])
+@jwt_required()
+def update_perfil_paciente():
+    """
+    Update patient profile information
+    Body: {
+        "nombre": "Juan",
+        "apellido": "Pérez",
+        "telefono": "+56912345678",
+        "fecha_nacimiento": "1995-05-15"  // Optional, format: YYYY-MM-DD
+    }
+    """
+    current_user_json = get_jwt_identity()
     try:
-        client = OpenAI(api_key=api_key)
-        image_data = base64.b64encode(file.read()).decode('utf-8')
-        
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": "Extract 'numero_licencia' and 'institucion' from this image. Return valid JSON."},
-                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_data}"}}
-                    ],
-                }
-            ],
-            response_format={ "type": "json_object" }
-        )
-        content = response.choices[0].message.content
-        return jsonify(json.loads(content)), 200
-        
-    except Exception as e:
-        return jsonify({"msg": f"OCR Error: {str(e)}"}), 500
+        current_user = json.loads(current_user_json)
+    except:
+        current_user = current_user_json
+    
+    if not isinstance(current_user, dict) or current_user.get('role') != 'paciente':
+        return jsonify({"msg": "Acceso denegado - Solo pacientes"}), 403
+    
+    user = Paciente.query.get(current_user['id'])
+    if not user:
+        return jsonify({"msg": "Usuario no encontrado"}), 404
+    
+    data = request.get_json()
+    
+    # Actualizar campos permitidos
+    if 'nombre' in data:
+        user.nombre = data['nombre']
+    if 'apellido' in data:
+        user.apellido = data['apellido']
+    if 'telefono' in data:
+        user.telefono = data['telefono']
+    if 'fecha_nacimiento' in data and data['fecha_nacimiento']:
+        try:
+            user.fecha_nacimiento = datetime.strptime(data['fecha_nacimiento'], '%Y-%m-%d').date()
+            # Calcular edad automáticamente si se proporciona fecha de nacimiento
+            from datetime import date
+            today = date.today()
+            age = today.year - user.fecha_nacimiento.year - (
+                (today.month, today.day) < (user.fecha_nacimiento.month, user.fecha_nacimiento.day)
+            )
+            user.edad = age
+        except ValueError:
+            return jsonify({"msg": "Formato de fecha inválido. Use YYYY-MM-DD"}), 400
+    
+    # Note: Email is not updateable for security reasons
+    # Password changes should use a separate endpoint
+    
+    db.session.commit()
+    
+    return jsonify({
+        "msg": "Perfil actualizado correctamente",
+        "paciente": {
+            "id": user.id_paciente,
+            "nombre": user.nombre,
+            "apellido": user.apellido,
+            "email": user.email,
+            "telefono": user.telefono,
+            "edad": user.edad,
+            "fecha_nacimiento": str(user.fecha_nacimiento) if user.fecha_nacimiento else None
+        }
+    }), 200
 
 
 
