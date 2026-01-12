@@ -1,12 +1,19 @@
 from app import db
 from datetime import datetime
+from sqlalchemy import func
+
+# Association table for many-to-many relationship between Psicologo and Especialidad
+psicologo_especialidad = db.Table('psicologo_especialidad',
+    db.Column('psicologo_id', db.Integer, db.ForeignKey('psicologos.id_psicologo'), primary_key=True),
+    db.Column('especialidad_id', db.Integer, db.ForeignKey('especialidades.id'), primary_key=True)
+)
+3
 
 class Especialidad(db.Model):
     __tablename__ = 'especialidades'
     id = db.Column(db.Integer, primary_key=True)
     nombre = db.Column(db.String(100), unique=True, nullable=False)
-    # Relationship
-    psicologos = db.relationship('Psicologo', backref='especialidad_ref', lazy=True)
+
 
 class Psicologo(db.Model):
     __tablename__ = 'psicologos'
@@ -15,7 +22,28 @@ class Psicologo(db.Model):
     email = db.Column(db.String(120), unique=True, nullable=False)
     password_hash = db.Column(db.String(256), nullable=False)
     telefono = db.Column(db.String(20))
+    
+    # New fields for enhanced profile
+    foto_perfil = db.Column(db.String(500))  # URL to profile photo
+    bio = db.Column(db.Text)  # Professional description
+    verificado = db.Column(db.Boolean, default=False)  # Verification badge
+    anios_experiencia = db.Column(db.Integer)  # Years of experience
+    precio_presencial = db.Column(db.Float)  # In-person session price
+    precio_online = db.Column(db.Float)  # Online/video call session price
+    precio_chat = db.Column(db.Float)  # Chat session price
+    
+    # Bank account information
+    numero_cuenta = db.Column(db.String(34))  # IBAN max 34 characters
+    banco = db.Column(db.String(100))  # Bank name
+    titular_cuenta = db.Column(db.String(200))  # Account holder name
+    
+    # Keep old especialidad_id for backward compatibility (will be deprecated)
     especialidad_id = db.Column(db.Integer, db.ForeignKey('especialidades.id'))
+    
+    # Many-to-many relationship with Especialidad
+    especialidades = db.relationship('Especialidad', secondary=psicologo_especialidad, 
+                                    lazy='subquery',
+                                    backref=db.backref('psicologos', lazy=True))
     
     # Relationships
     citas = db.relationship('Cita', backref='psicologo', lazy=True)
@@ -23,15 +51,30 @@ class Psicologo(db.Model):
     facturas = db.relationship('Factura', backref='psicologo', lazy=True)
     notificaciones = db.relationship('Notificacion', backref='psicologo', lazy=True)
     resumenes_ingresos = db.relationship('ResumenIngresos', backref='psicologo', lazy=True)
+    resenas = db.relationship('Resena', backref='psicologo', lazy=True)
+    
+    def get_rating_promedio(self):
+        """Calculate average rating from reviews"""
+        if not self.resenas:
+            return None
+        return db.session.query(func.avg(Resena.puntuacion)).filter(
+            Resena.id_psicologo == self.id_psicologo
+        ).scalar()
+    
+    def get_num_resenas(self):
+        """Get total number of reviews"""
+        return len(self.resenas)
+
 
 class Paciente(db.Model):
     __tablename__ = 'pacientes'
     id_paciente = db.Column(db.Integer, primary_key=True)
-    correo_electronico = db.Column(db.String(120), unique=True, nullable=False)
-    contrasena = db.Column(db.String(256), nullable=False)
+    email = db.Column(db.String(120), unique=True, nullable=False)
+    password_hash = db.Column(db.String(256), nullable=False)
     nombre = db.Column(db.String(100), nullable=False)
     apellido = db.Column(db.String(100))
     edad = db.Column(db.Integer)
+    fecha_nacimiento = db.Column(db.Date)  # Birth date
     telefono = db.Column(db.String(20))
     tipo_paciente = db.Column(db.String(50))
     tipo_tarjeta = db.Column(db.String(50))
@@ -42,6 +85,17 @@ class Paciente(db.Model):
     facturas = db.relationship('Factura', backref='paciente', lazy=True)
     notificaciones = db.relationship('Notificacion', backref='paciente', lazy=True)
     historial_clinico = db.relationship('HistorialClinico', backref='paciente', uselist=False, cascade="all, delete-orphan")
+    resenas = db.relationship('Resena', backref='paciente', lazy=True)
+
+class Resena(db.Model):
+    __tablename__ = 'resenas'
+    id_resena = db.Column(db.Integer, primary_key=True)
+    id_psicologo = db.Column(db.Integer, db.ForeignKey('psicologos.id_psicologo'), nullable=False)
+    id_paciente = db.Column(db.Integer, db.ForeignKey('pacientes.id_paciente'), nullable=False)
+    puntuacion = db.Column(db.Integer, nullable=False)  # 1-5 stars
+    comentario = db.Column(db.Text)
+    fecha_creacion = db.Column(db.DateTime, default=datetime.utcnow)
+
 
 class Cita(db.Model):
     __tablename__ = 'citas'

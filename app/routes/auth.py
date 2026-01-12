@@ -24,8 +24,8 @@ def login():
             return jsonify(access_token=access_token, role='psicologo'), 200
             
     elif role == 'paciente':
-        user = Paciente.query.filter_by(correo_electronico=email).first()
-        if user and check_password_hash(user.contrasena, password):
+        user = Paciente.query.filter_by(email=email).first()
+        if user and check_password_hash(user.password_hash, password):
             access_token = create_access_token(identity={'id': user.id_paciente, 'role': 'paciente'})
             return jsonify(access_token=access_token, role='paciente'), 200
     
@@ -50,13 +50,13 @@ def register():
         db.session.add(new_user)
         
     elif role == 'paciente':
-        if Paciente.query.filter_by(correo_electronico=data.get('email')).first():
+        if Paciente.query.filter_by(email=data.get('email')).first():
              return jsonify({"msg": "Email already exists"}), 400
              
         new_user = Paciente(
             nombre=data.get('nombre'),
-            correo_electronico=data.get('email'),
-            contrasena=generate_password_hash(data.get('password')),
+            email=data.get('email'),
+            password_hash=generate_password_hash(data.get('password')),
             apellido=data.get('apellido'),
             edad=data.get('edad'),
             telefono=data.get('telefono'),
