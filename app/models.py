@@ -7,7 +7,7 @@ psicologo_especialidad = db.Table('psicologo_especialidad',
     db.Column('psicologo_id', db.Integer, db.ForeignKey('psicologos.id_psicologo'), primary_key=True),
     db.Column('especialidad_id', db.Integer, db.ForeignKey('especialidades.id'), primary_key=True)
 )
-3
+
 
 class Especialidad(db.Model):
     __tablename__ = 'especialidades'
