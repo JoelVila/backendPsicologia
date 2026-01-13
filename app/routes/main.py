@@ -8,6 +8,18 @@ import json
 
 main_bp = Blueprint('main', __name__)
 
+# --- Especialidades ---
+@main_bp.route('/especialidades', methods=['GET'])
+def get_especialidades():
+    especialidades = Especialidad.query.all()
+    result = []
+    for e in especialidades:
+        result.append({
+            'id': e.id,
+            'nombre': e.nombre
+        })
+    return jsonify(result), 200
+
 # --- Psicologos ---
 @main_bp.route('/psicologos', methods=['GET'])
 @jwt_required()
