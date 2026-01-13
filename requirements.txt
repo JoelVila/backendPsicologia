@@ -7,3 +7,5 @@ Flask-Migrate
 gunicorn
 cryptography
 
+
+requests
