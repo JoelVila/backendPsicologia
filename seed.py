@@ -5,19 +5,24 @@ app = create_app()
 
 def seed_especialidades():
     with app.app_context():
-        # Check if specialties exist
-        if Especialidad.query.first():
-            print("Especialidades already exist.")
-            return
-
         especialidades = [
             "Psicología Clínica",
             "Psicología Educativa",
-            "Psicología Infantil",
+            "Psicología Infantil y Juvenil",
             "Neuropsicología",
             "Psicología Forense",
             "Psicología del Deporte",
+            "Psicología de la Salud",
             "Psicología Organizacional",
+            "Psicología Social",
+            "Psicología Familiar y de Pareja",
+            "Psicología Cognitivo-Conductual",
+            "Psicoanálisis",
+            "Psicología Humanista",
+            "Sexología",
+            "Psicogerontología",
+            "Psicología de las Adicciones",
+            "Coaching Psicológico",
             "Terapia de Pareja",
             "Terapia Familiar",
             "Psicología Geriátrica",
@@ -28,14 +33,14 @@ def seed_especialidades():
             "TDAH",
             "Trauma y TEPT",
             "Mindfulness y Meditación",
-            "Coaching Psicológico",
-            "Sexología",
             "Duelo y Pérdida"
         ]
 
         for nombre in especialidades:
-            nueva = Especialidad(nombre=nombre)
-            db.session.add(nueva)
+            if not Especialidad.query.filter_by(nombre=nombre).first():
+                nueva = Especialidad(nombre=nombre)
+                db.session.add(nueva)
+                print(f"Adding: {nombre}")
         
         db.session.commit()
         print("Especialidades added successfully!")
@@ -45,14 +50,14 @@ def seed_admin():
     from werkzeug.security import generate_password_hash
     with app.app_context():
         # Check if admin already exists
-        if Administrador.query.filter_by(correo_electronico='admin@psicologia.com').first():
+        if Administrador.query.filter_by(email='admin@psicologia.com').first():
             print("Admin user already exists.")
             return
 
         admin = Administrador(
             nombre="Administrador",
-            correo_electronico="admin@psicologia.com",
-            contrasenia=generate_password_hash("admin123")
+            email="admin@psicologia.com",
+            password_hash=generate_password_hash("admin123")
         )
         db.session.add(admin)
         db.session.commit()
