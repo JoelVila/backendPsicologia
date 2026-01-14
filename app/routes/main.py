@@ -24,13 +24,11 @@ def get_psicologos():
     psicologos = Psicologo.query.all()
     result = []
     for p in psicologos:
-        # Model Psicologo lacks 'nombre' and 'especialidad_ref'. Using correo and raw field if available.
-        # Assuming 'especialidad_ref' might not exist either, safely checking.
         result.append({
             'id_psicologo': p.id_psicologo,
-            'nombre': p.correo_electronico, # Fallback since nombre doesn't exist
+            'nombre': p.nombre or p.correo_electronico, 
             'email': p.correo_electronico,
-            'especialidad': p.tipo_especialidad # Using correct field from model
+            'especialidad': p.especialidad.nombre if p.especialidad else None
         })
     return jsonify(result), 200
 
@@ -194,24 +192,44 @@ def analyze_document():
         }), 200
         
     try:
+        from app.utils.verification_copc import verify_psicologo_copc
         client = OpenAI(api_key=api_key)
-        image_data = base64.b64encode(file.read()).decode('utf-8')
         
+        # Leemos el archivo y lo codificamos en base64
+        file_content = file.read()
+        image_data = base64.b64encode(file_content).decode('utf-8')
+        
+        # Paso 1: OCR con OpenAI para extraer el número
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
                 {
                     "role": "user",
                     "content": [
-                        {"type": "text", "text": "Extract 'numero_licencia' and 'institucion' from this image. Return valid JSON."},
+                        {"type": "text", "text": "Extract 'numero_colegiado' (only digits) and 'nombre_completo' from this accreditation document. Return valid JSON."},
                         {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_data}"}}
                     ],
                 }
             ],
             response_format={ "type": "json_object" }
         )
-        content = response.choices[0].message.content
-        return jsonify(json.loads(content)), 200
+        
+        extracted_data = json.loads(response.choices[0].message.content)
+        numero_colegiado = extracted_data.get('numero_colegiado')
+        
+        # Paso 2: Verificación real en la web del COPC
+        verification_result = verify_psicologo_copc(numero_colegiado)
+        
+        # Combinamos los resultados
+        result = {
+            "numero_licencia": verification_result.get("numero_colegiado") or numero_colegiado,
+            "nombre": verification_result.get("nombre") or extracted_data.get('nombre_completo'),
+            "verified": verification_result.get("verified", False),
+            "institucion": "COPC (Catalunya)" if verification_result.get("verified") else extracted_data.get('institucion', "Desconocida"),
+            "msg": verification_result.get("msg")
+        }
+        
+        return jsonify(result), 200
         
     except Exception as e:
         return jsonify({"msg": f"OCR Error: {str(e)}"}), 500

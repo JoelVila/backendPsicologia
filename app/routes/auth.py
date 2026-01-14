@@ -1,7 +1,6 @@
 from flask import Blueprint, request, jsonify
 from app.extensions import db
-
-from app.models import Psicologo, Paciente
+from app.models import Psicologo, Paciente, Administrador
 from app.models.Especialidad import Especialidad
 from flask_jwt_extended import create_access_token, jwt_required, get_jwt_identity
 from werkzeug.security import check_password_hash, generate_password_hash
@@ -16,24 +15,28 @@ def login():
     
     email = data.get('email')
     password = data.get('password')
-    role = data.get('role') # 'psicologo' or 'paciente'
+    role = data.get('role') # 'psicologo', 'paciente' or 'admin'
 
     if not role:
         return jsonify({"msg": "Role is required"}), 400
 
     if role == 'psicologo':
         user = Psicologo.query.filter_by(correo_electronico=email).first()
-        # Model has 'contrasenia', not 'password_hash'
         if user and check_password_hash(user.contrasenia, password):
             access_token = create_access_token(identity={'id': user.id_psicologo, 'role': 'psicologo'})
             return jsonify(access_token=access_token, role='psicologo'), 200
             
     elif role == 'paciente':
         user = Paciente.query.filter_by(correo_electronico=email).first()
-        # Model has 'contrasenia'
         if user and check_password_hash(user.contrasenia, password):
             access_token = create_access_token(identity={'id': user.id_paciente, 'role': 'paciente'})
             return jsonify(access_token=access_token, role='paciente'), 200
+
+    elif role == 'admin':
+        user = Administrador.query.filter_by(correo_electronico=email).first()
+        if user and check_password_hash(user.contrasenia, password):
+            access_token = create_access_token(identity={'id': user.id_admin, 'role': 'admin'})
+            return jsonify(access_token=access_token, role='admin'), 200
     
     return jsonify({"msg": "Bad username or password"}), 401
 
@@ -49,21 +52,45 @@ def register():
         if Psicologo.query.filter_by(correo_electronico=data.get('email')).first():
              return jsonify({"msg": "Email already exists"}), 400
         
+        # Handle specialty (can be ID or Name/Tag)
+        especialidad_input = data.get('especialidad_id')
+        target_especialidad_id = None
+        
+        if isinstance(especialidad_input, int):
+            target_especialidad_id = especialidad_input
+        elif isinstance(especialidad_input, str):
+            # If it's a string, look up the ID by specialty name
+            esp = Especialidad.query.filter_by(nombre=especialidad_input).first()
+            if esp:
+                target_especialidad_id = esp.id
+
+        # --- Verificación de Seguridad contra el COPC ---
+        num_licencia = data.get('numero_licencia')
+        if not num_licencia:
+             return jsonify({"msg": "Registration failed: License number is required for verification."}), 400
+             
+        from app.utils.verification_copc import verify_psicologo_copc
+        verification = verify_psicologo_copc(num_licencia)
+        if not verification.get("verified"):
+            return jsonify({"msg": f"Registration denied: {verification.get('msg')}"}), 403
+            
+        # Usar datos verificados para mayor precisión
+        nombre_final = verification.get("nombre") or data.get('nombre')
+        licencia_final = verification.get("numero_colegiado") or num_licencia
+        institucion_final = "COPC (Catalunya)" if verification.get("verified") else data.get('institucion')
+        # -----------------------------------------------
+
         new_user = Psicologo(
+            nombre=nombre_final,
             correo_electronico=data.get('email'),
             contrasenia=generate_password_hash(data.get('password')),
-            numero_licencia=data.get('numero_licencia'),
-            institucion=data.get('institucion'),
+            numero_licencia=licencia_final,
+            institucion=institucion_final,
             documento_acreditacion=data.get('documento_acreditacion'),
-            foto_psicologo=data.get('foto_psicologo')
+            foto_psicologo=data.get('foto_psicologo'),
+            especialidad_id=target_especialidad_id,
+            verificado=verification.get("verified", False)
         )
-        
-        # Handle multiple specialties
-        especialidad_ids = data.get('especialidad_ids', [])
-        if especialidad_ids:
-            especialidades = Especialidad.query.filter(Especialidad.id.in_(especialidad_ids)).all()
-            new_user.especialidades = especialidades
-        
         db.session.add(new_user)
         
     elif role == 'paciente':
