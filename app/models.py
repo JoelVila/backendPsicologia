@@ -24,7 +24,7 @@ class Psicologo(db.Model):
     telefono = db.Column(db.String(20))
     
     # New fields for enhanced profile
-    foto_perfil = db.Column(db.String(500))  # URL to profile photo
+    foto_perfil = db.Column(db.String(500), nullable=False)  # URL to profile photo
     bio = db.Column(db.Text)  # Professional description
     verificado = db.Column(db.Boolean, default=False)  # Verification badge
     anios_experiencia = db.Column(db.Integer)  # Years of experience
@@ -76,6 +76,7 @@ class Paciente(db.Model):
     edad = db.Column(db.Integer)
     fecha_nacimiento = db.Column(db.Date)  # Birth date
     telefono = db.Column(db.String(20))
+    foto_perfil = db.Column(db.String(500), nullable=False) # URL to profile photo
     tipo_paciente = db.Column(db.String(50))
     tipo_tarjeta = db.Column(db.String(50))
     
