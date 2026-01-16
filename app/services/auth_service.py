@@ -88,24 +88,45 @@ class AuthService:
             )
             
             # Handle specialties
-            especialidades_input = data.get('especialidades', []) # List of IDs
+            especialidades_input = data.get('especialidades', []) # Can be List of IDs or Names
             especialidad_id_legacy = data.get('especialidad_id') # Single ID or Name
             
-            if isinstance(especialidad_id_legacy, str):
+            # Resolve legacy single specialty
+            if isinstance(especialidad_id_legacy, str) and not especialidad_id_legacy.isdigit():
                 esp = Especialidad.query.filter_by(nombre=especialidad_id_legacy).first()
                 if esp:
                     especialidad_id_legacy = esp.id
+                else:
+                    especialidad_id_legacy = None
             
             if especialidad_id_legacy:
-                new_user.especialidad_id = especialidad_id_legacy
+                try:
+                    new_user.especialidad_id = int(especialidad_id_legacy)
+                except (ValueError, TypeError):
+                    pass
                 
             if especialidades_input:
-                for esp_id in especialidades_input:
-                    especialidad = Especialidad.query.get(esp_id)
+                for item in especialidades_input:
+                    especialidad = None
+                    # If it's a dictionary, extract ID or Name
+                    val = item
+                    if isinstance(item, dict):
+                        val = item.get('id') or item.get('nombre')
+                    
+                    if not val: continue
+
+                    # Try as ID first
+                    if isinstance(val, int) or (isinstance(val, str) and val.isdigit()):
+                        especialidad = Especialidad.query.get(int(val))
+                    # If not ID, try as Name
+                    else:
+                        especialidad = Especialidad.query.filter(Especialidad.nombre.ilike(val)).first()
+                    
                     if especialidad:
                         new_user.especialidades.append(especialidad)
+                        # Sync with legacy column if empty
                         if not new_user.especialidad_id:
-                            new_user.especialidad_id = esp_id
+                            new_user.especialidad_id = especialidad.id
             
             db.session.add(new_user)
             

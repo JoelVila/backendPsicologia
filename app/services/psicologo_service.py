@@ -69,11 +69,31 @@ class PsicologoService:
         
         if 'especialidades' in data:
             psicologo.especialidades.clear()
-            especialidad_ids = data['especialidades']
-            for esp_id in especialidad_ids:
-                especialidad = Especialidad.query.get(esp_id)
+            especialidad_input = data['especialidades']
+            if not isinstance(especialidad_input, list):
+                especialidad_input = [especialidad_input]
+                
+            for item in especialidad_input:
+                especialidad = None
+                # If it's a dictionary, extract ID or Name
+                val = item
+                if isinstance(item, dict):
+                    val = item.get('id') or item.get('nombre')
+                
+                if not val: continue
+
+                # Try as ID
+                if isinstance(val, int) or (isinstance(val, str) and val.isdigit()):
+                    especialidad = Especialidad.query.get(int(val))
+                # Try as Name
+                else:
+                    especialidad = Especialidad.query.filter(Especialidad.nombre.ilike(val)).first()
+                
                 if especialidad:
                     psicologo.especialidades.append(especialidad)
+                    # Update legacy column with the first one
+                    if not psicologo.especialidad_id:
+                        psicologo.especialidad_id = especialidad.id
         
         db.session.commit()
         return psicologo, None, 200
