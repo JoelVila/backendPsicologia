@@ -5,6 +5,8 @@ from flask_jwt_extended import jwt_required, get_jwt_identity, create_access_tok
 from werkzeug.security import check_password_hash, generate_password_hash
 from datetime import datetime
 import json
+import uuid
+import os
 from app.services.psicologo_service import PsicologoService
 from app.services.cita_service import CitaService
 from app.services.general_service import InformeService, HistorialService, FacturaService, EspecialidadService
@@ -150,6 +152,43 @@ def update_perfil_psicologo():
             "precio_online": psicologo.precio_online,
             "precio_chat": psicologo.precio_chat
         }
+    }), 200
+
+
+# --- Upload Psychologist Photo ---
+@main_bp.route('/psicologos/subir-foto', methods=['POST'])
+@jwt_required()
+def upload_foto_psicologo():
+    current_user = get_jwt_identity()
+    if not isinstance(current_user, dict):
+        try: current_user = json.loads(current_user)
+        except: pass
+        
+    if 'foto' not in request.files:
+        return jsonify({"msg": "No hay archivo 'foto' en la petición"}), 400
+    
+    file = request.files['foto']
+    if file.filename == '':
+        return jsonify({"msg": "No se seleccionó ningún archivo"}), 400
+        
+    # Generar un nombre único para que no se sobrescriban
+    extension = os.path.splitext(file.filename)[1]
+    filename = f"{uuid.uuid4().hex}{extension}"
+    
+    # Asegúrate de crear la carpeta uploads en la raíz de tu proyecto
+    upload_path = os.path.join(os.getcwd(), 'uploads')
+    if not os.path.exists(upload_path):
+        os.makedirs(upload_path)
+        
+    file.save(os.path.join(upload_path, filename))
+    
+    # Devolvemos la URL que el front usará para ver la foto
+    # Usamos la IP local para que sea accesible desde el móvil en la misma red
+    foto_url = f"http://127.0.0.1:5000/uploads/{filename}"
+    
+    return jsonify({
+        "msg": "Foto subida correctamente",
+        "url": foto_url
     }), 200
 
 
@@ -571,6 +610,38 @@ def update_perfil_paciente():
             "fecha_nacimiento": str(user.fecha_nacimiento) if user.fecha_nacimiento else None
         }
     }), 200
+
+# --- Upload Patient Photo ---
+@main_bp.route('/pacientes/subir-foto', methods=['POST'])
+@jwt_required()
+def upload_foto_paciente():
+    current_user = get_jwt_identity()
+    if not isinstance(current_user, dict):
+        try: current_user = json.loads(current_user)
+        except: pass
+        
+    if 'foto' not in request.files:
+        return jsonify({"msg": "No hay archivo 'foto' en la petición"}), 400
+    
+    file = request.files['foto']
+    if file.filename == '':
+        return jsonify({"msg": "No se seleccionó ningún archivo"}), 400
+        
+    extension = os.path.splitext(file.filename)[1]
+    filename = f"{uuid.uuid4().hex}{extension}"
+    
+    upload_path = os.path.join(os.getcwd(), 'uploads')
+    if not os.path.exists(upload_path):
+        os.makedirs(upload_path)
+        
+    file.save(os.path.join(upload_path, filename))
+    foto_url = f"http://127.0.0.1:5000/uploads/{filename}"
+    
+    return jsonify({
+        "msg": "Foto subida correctamente",
+        "url": foto_url
+    }), 200
+
 
 # --- OCR Verification ---
 @main_bp.route('/analyze-document', methods=['POST'])
