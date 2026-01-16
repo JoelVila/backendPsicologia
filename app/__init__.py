@@ -1,8 +1,9 @@
-from flask import Flask
+import os
+from flask import Flask, send_from_directory
 from flask_sqlalchemy import SQLAlchemy
 from flask_jwt_extended import JWTManager
 from flask_migrate import Migrate
-from config import Config
+from app.config import Config
 
 db = SQLAlchemy()
 jwt = JWTManager()
@@ -19,5 +20,11 @@ def create_app(config_class=Config):
     from app.routes import auth_bp, main_bp
     app.register_blueprint(auth_bp, url_prefix='/auth')
     app.register_blueprint(main_bp, url_prefix='/main')
+
+    # Add route to serve uploaded files
+    @app.route('/uploads/<path:filename>')
+    def uploaded_file(filename):
+        upload_path = os.path.join(os.getcwd(), 'uploads')
+        return send_from_directory(upload_path, filename)
 
     return app
