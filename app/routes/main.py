@@ -5,13 +5,16 @@ from flask_jwt_extended import jwt_required, get_jwt_identity, create_access_tok
 from werkzeug.security import check_password_hash, generate_password_hash
 from datetime import datetime
 import json
+from app.services.psicologo_service import PsicologoService
+from app.services.cita_service import CitaService
+from app.services.general_service import InformeService, HistorialService, FacturaService, EspecialidadService
 
 main_bp = Blueprint('main', __name__)
 
 # --- Especialidades ---
 @main_bp.route('/especialidades', methods=['GET'])
 def get_especialidades():
-    especialidades = Especialidad.query.all()
+    especialidades = EspecialidadService.get_all()
     result = []
     for e in especialidades:
         result.append({
@@ -24,14 +27,14 @@ def get_especialidades():
 @main_bp.route('/psicologos', methods=['GET'])
 @jwt_required()
 def get_psicologos():
-    psicologos = Psicologo.query.all()
+    psicologos = PsicologoService.get_all_basic()
     result = []
     for p in psicologos:
         result.append({
             'id_psicologo': p.id_psicologo,
             'nombre': p.nombre,
             'email': p.email,
-            'especialidad': p.especialidad_id # Use ID or join logic if needed
+            'especialidad': p.especialidad_id
         })
     return jsonify(result), 200
 
@@ -40,45 +43,8 @@ def get_psicologos():
 def search_psicologos():
     """
     Public endpoint to search psychologists with enhanced data
-    Query params:
-    - q: search query (searches in nombre and bio)
-    - especialidad: filter by specialty name
-    - precio_max: maximum price filter
     """
-    query = Psicologo.query
-    
-    # Search by name or bio
-    search_query = request.args.get('q', '').strip()
-    if search_query:
-        query = query.filter(
-            db.or_(
-                Psicologo.nombre.ilike(f'%{search_query}%'),
-                Psicologo.bio.ilike(f'%{search_query}%')
-            )
-        )
-    
-    # Filter by specialty
-    especialidad_param = request.args.get('especialidad', '').strip()
-    if especialidad_param:
-        query = query.join(Psicologo.especialidades).filter(
-            Especialidad.nombre.ilike(f'%{especialidad_param}%')
-        )
-    
-    # Filter by maximum price
-    precio_max = request.args.get('precio_max')
-    if precio_max:
-        try:
-            precio_max = float(precio_max)
-            query = query.filter(
-                db.or_(
-                    Psicologo.precio_presencial <= precio_max,
-                    Psicologo.precio_online <= precio_max
-                )
-            )
-        except ValueError:
-            pass
-    
-    psicologos = query.all()
+    psicologos = PsicologoService.search_psicologos(request.args)
     
     result = []
     for p in psicologos:
@@ -111,75 +77,16 @@ def search_psicologos():
 # --- Get Psychologist Availability by Date (Public) ---
 @main_bp.route('/psicologos/<int:id_psicologo>/disponibilidad', methods=['GET'])
 def get_disponibilidad_psicologo(id_psicologo):
-    """
-    Get available time slots for a psychologist on a specific date
-    Query params:
-    - fecha: date in format YYYY-MM-DD (required)
-    Returns: list of available hours
-    """
-    # Verificar que el psicólogo existe
-    psicologo = Psicologo.query.get(id_psicologo)
-    if not psicologo:
-        return jsonify({"msg": "Psicólogo no encontrado"}), 404
-    
-    # Obtener fecha del query param
-    fecha_str = request.args.get('fecha')
-    if not fecha_str:
-        return jsonify({"msg": "Parámetro 'fecha' es requerido (formato: YYYY-MM-DD)"}), 400
-    
-    try:
-        fecha_consulta = datetime.strptime(fecha_str, '%Y-%m-%d').date()
-    except ValueError:
-        return jsonify({"msg": "Formato de fecha inválido. Use YYYY-MM-DD"}), 400
-    
-    # Verificar que la fecha no sea en el pasado
-    from datetime import date
-    if fecha_consulta < date.today():
-        return jsonify({"msg": "No se pueden agendar citas en fechas pasadas"}), 400
-    
-    # Horarios de trabajo típicos (puedes ajustar según necesites)
-    # Por ahora usamos un horario fijo, pero esto podría venir de una tabla de disponibilidad
-    horarios_trabajo = [
-        "09:00", "10:00", "11:00", "12:00",
-        "14:00", "15:00", "16:00", "17:00", "18:00", "19:00"
-    ]
-    
-    # Obtener citas ya agendadas para ese psicólogo en esa fecha
-    citas_ocupadas = Cita.query.filter_by(
-        id_psicologo=id_psicologo,
-        fecha=fecha_consulta
-    ).filter(
-        Cita.estado.in_(['pendiente', 'confirmada', 'programada', 'en_curso'])
-    ).all()
-    
-    # Extraer las horas ocupadas
-    horas_ocupadas = [str(cita.hora)[0:5] for cita in citas_ocupadas]  # Formato HH:MM
-    
-    # Filtrar horarios disponibles
-    horarios_disponibles = [h for h in horarios_trabajo if h not in horas_ocupadas]
-    
-    return jsonify({
-        "fecha": fecha_str,
-        "psicologo_id": id_psicologo,
-        "psicologo_nombre": psicologo.nombre,
-        "horarios_disponibles": horarios_disponibles,
-        "total_disponibles": len(horarios_disponibles)
-    }), 200
+    data, error, status = CitaService.get_disponibilidad_psicologo(id_psicologo, request.args.get('fecha'))
+    if error:
+        return jsonify(error), status
+    return jsonify(data), status
 
 
 # --- Book Appointment (Authenticated) ---
 @main_bp.route('/citas/agendar', methods=['POST'])
 @jwt_required()
 def agendar_cita():
-    """
-    Book an appointment with automatic validation and price calculation
-    Body: {
-        "id_psicologo": 1,
-        "fecha": "2026-01-15",
-        "hora": "10:00",
-        "tipo_cita": "videollamada"  // "presencial", "videollamada", "chat"
-    }
-    """
     current_user = get_jwt_identity()
     
     # Parse JSON if needed
@@ -195,70 +102,13 @@ def agendar_cita():
     
     data = request.get_json()
     
-    # Validar campos requeridos
-    required_fields = ['id_psicologo', 'fecha', 'hora', 'tipo_cita']
-    for field in required_fields:
-        if field not in data:
-            return jsonify({"msg": f"Campo '{field}' es requerido"}), 400
+    # Call Service
+    nueva_cita, error_response, status_code = CitaService.agendar_cita(current_user['id'], data)
     
-    # Validar psicólogo existe
-    psicologo = Psicologo.query.get(data['id_psicologo'])
-    if not psicologo:
-        return jsonify({"msg": "Psicólogo no encontrado"}), 404
+    if error_response:
+        return jsonify(error_response), status_code
     
-    # Validar y parsear fecha/hora
-    try:
-        fecha_cita = datetime.strptime(data['fecha'], '%Y-%m-%d').date()
-        hora_cita = datetime.strptime(data['hora'], '%H:%M').time()
-    except ValueError:
-        return jsonify({"msg": "Formato de fecha u hora inválido"}), 400
-    
-    # Validar que la fecha no sea en el pasado
-    from datetime import date
-    if fecha_cita < date.today():
-        return jsonify({"msg": "No se pueden agendar citas en fechas pasadas"}), 400
-    
-    # Validar tipo de cita
-    tipos_validos = ['presencial', 'videollamada', 'chat']
-    if data['tipo_cita'] not in tipos_validos:
-        return jsonify({"msg": f"Tipo de cita debe ser uno de: {', '.join(tipos_validos)}"}), 400
-    
-    # Verificar disponibilidad (no hay otra cita a esa hora)
-    cita_existente = Cita.query.filter_by(
-        id_psicologo=data['id_psicologo'],
-        fecha=fecha_cita,
-        hora=hora_cita
-    ).filter(
-        Cita.estado.in_(['pendiente', 'confirmada', 'programada', 'en_curso'])
-    ).first()
-    
-    if cita_existente:
-        return jsonify({"msg": "El horario seleccionado ya no está disponible"}), 409
-    
-    # Calcular precio automáticamente según tipo de cita
-    precio_map = {
-        'presencial': psicologo.precio_presencial,
-        'videollamada': psicologo.precio_online,
-        'chat': psicologo.precio_chat
-    }
-    precio_cita = precio_map.get(data['tipo_cita'])
-    
-    if precio_cita is None:
-        return jsonify({"msg": f"El psicólogo no tiene configurado el precio para {data['tipo_cita']}"}), 400
-    
-    # Crear la cita
-    nueva_cita = Cita(
-        fecha=fecha_cita,
-        hora=hora_cita,
-        id_psicologo=data['id_psicologo'],
-        id_paciente=current_user['id'],
-        tipo_cita=data['tipo_cita'],
-        precio_cita=precio_cita,
-        estado='pendiente'
-    )
-    
-    db.session.add(nueva_cita)
-    db.session.commit()
+    psicologo = nueva_cita.psicologo
     
     return jsonify({
         "msg": "Cita agendada exitosamente",
@@ -281,61 +131,14 @@ def agendar_cita():
 @main_bp.route('/psicologos/perfil', methods=['PUT'])
 @jwt_required()
 def update_perfil_psicologo():
-    """
-    Endpoint for psychologists to update their profile
-    Used for initial configuration (pricing, bank account) and profile updates
-    """
     current_user = get_jwt_identity()
     
-    # Verificar que es un psicólogo
     if not isinstance(current_user, dict) or current_user.get('role') != 'psicologo':
         return jsonify({"msg": "Acceso denegado - Solo psicólogos"}), 403
     
-    psicologo = Psicologo.query.get(current_user['id'])
-    if not psicologo:
-        return jsonify({"msg": "Psicólogo no encontrado"}), 404
-    
-    data = request.get_json()
-    
-    # Actualizar tarifas
-    if 'precio_presencial' in data:
-        psicologo.precio_presencial = data['precio_presencial']
-    if 'precio_online' in data:
-        psicologo.precio_online = data['precio_online']
-    if 'precio_chat' in data:
-        psicologo.precio_chat = data['precio_chat']
-    
-    # Actualizar información bancaria
-    if 'numero_cuenta' in data:
-        psicologo.numero_cuenta = data.get('numero_cuenta')
-    if 'banco' in data:
-        psicologo.banco = data.get('banco')
-    if 'titular_cuenta' in data:
-        psicologo.titular_cuenta = data.get('titular_cuenta')
-    
-    # Actualizar información de perfil
-    if 'bio' in data:
-        psicologo.bio = data['bio']
-    if 'foto_perfil' in data:
-        psicologo.foto_perfil = data['foto_perfil']
-    if 'anios_experiencia' in data:
-        psicologo.anios_experiencia = data['anios_experiencia']
-    if 'telefono' in data:
-        psicologo.telefono = data['telefono']
-    
-    # Actualizar especialidades (si se envían)
-    if 'especialidades' in data:
-        # Clear existing specialties
-        psicologo.especialidades.clear()
-        
-        # Add new specialties
-        especialidad_ids = data['especialidades']  # List of specialty IDs
-        for esp_id in especialidad_ids:
-            especialidad = Especialidad.query.get(esp_id)
-            if especialidad:
-                psicologo.especialidades.append(especialidad)
-    
-    db.session.commit()
+    psicologo, error, status = PsicologoService.update_profile(current_user['id'], request.get_json())
+    if error:
+        return jsonify(error), status
     
     return jsonify({
         "msg": "Perfil actualizado correctamente",
@@ -354,15 +157,12 @@ def update_perfil_psicologo():
 @main_bp.route('/psicologos/perfil', methods=['GET'])
 @jwt_required()
 def get_perfil_psicologo():
-    """
-    Get the authenticated psychologist's own profile
-    """
     current_user = get_jwt_identity()
     
     if not isinstance(current_user, dict) or current_user.get('role') != 'psicologo':
         return jsonify({"msg": "Acceso denegado"}), 403
     
-    psicologo = Psicologo.query.get(current_user['id'])
+    psicologo = PsicologoService.get_profile(current_user['id'])
     if not psicologo:
         return jsonify({"msg": "Psicólogo no encontrado"}), 404
     
@@ -388,19 +188,9 @@ def get_perfil_psicologo():
 @main_bp.route('/citas', methods=['POST'])
 @jwt_required()
 def create_cita():
-    current_user = get_jwt_identity() # Now returns dict {'id': ..., 'role': ...}
+    current_user = get_jwt_identity()
     data = request.get_json()
-    
-    new_cita = Cita(
-        fecha=datetime.strptime(data['fecha'], '%Y-%m-%d').date(),
-        hora=datetime.strptime(data['hora'], '%H:%M').time(),
-        id_psicologo=data['id_psicologo'],
-        id_paciente=data['id_paciente'],
-        tipo_cita=data.get('tipo_cita'),
-        precio_cita=data.get('precio_cita')
-    )
-    db.session.add(new_cita)
-    db.session.commit()
+    CitaService.create_simple_cita(data, current_user.get('role'), current_user.get('id'))
     return jsonify({"msg": "Cita created"}), 201
 
 @main_bp.route('/citas', methods=['GET'])
@@ -425,57 +215,22 @@ def get_citas():
 @main_bp.route('/psicologos/citas', methods=['GET'])
 @jwt_required()
 def get_citas_psicologo():
-    """
-    Get appointments for the authenticated psychologist
-    Query params:
-    - estado: 'proximas' or 'historial' (default: proximas)
-    """
     current_user = get_jwt_identity()
     
-    # Verificar que es un psicólogo
     if not isinstance(current_user, dict) or current_user.get('role') != 'psicologo':
         return jsonify({"msg": "Acceso denegado - Solo psicólogos"}), 403
     
-    psicologo_id = current_user['id']
-    
-    # Filtrar por estado (próximas o historial)
-    filtro_estado = request.args.get('estado', 'proximas').lower()
-    
-    # Query base: citas del psicólogo autenticado
-    query = Cita.query.filter_by(id_psicologo=psicologo_id)
-    
-    # Filtrar por estado
-    if filtro_estado == 'proximas':
-        # Citas pendientes o en curso, ordenadas por fecha ascendente
-        query = query.filter(
-            db.or_(
-                Cita.estado == 'pendiente',
-                Cita.estado == 'confirmada',
-                Cita.estado == 'en_curso'
-            )
-        ).order_by(Cita.fecha.asc(), Cita.hora.asc())
-    elif filtro_estado == 'historial':
-        # Citas completadas o canceladas, ordenadas por fecha descendente
-        query = query.filter(
-            db.or_(
-                Cita.estado == 'completada',
-                Cita.estado == 'cancelada'
-            )
-        ).order_by(Cita.fecha.desc(), Cita.hora.desc())
-    
-    citas = query.all()
+    citas = CitaService.get_citas_psicologo(current_user['id'], request.args.get('estado', 'proximas'))
     
     result = []
     for cita in citas:
-        # Get patient info
         paciente = cita.paciente
-        
         result.append({
             'id_cita': cita.id,
             'fecha': str(cita.fecha),
             'hora': str(cita.hora),
             'estado': cita.estado,
-            'tipo_cita': cita.tipo_cita,  # 'videollamada', 'chat', 'presencial'
+            'tipo_cita': cita.tipo_cita,
             'precio': cita.precio_cita,
             'paciente': {
                 'id': paciente.id_paciente,
@@ -492,65 +247,26 @@ def get_citas_psicologo():
 @main_bp.route('/pacientes/citas', methods=['GET'])
 @jwt_required()
 def get_citas_paciente():
-    """
-    Get appointments for the authenticated patient
-    Query params:
-    - estado: 'proximas' or 'historial' (default: proximas)
-    """
     current_user = get_jwt_identity()
     
-    # Parse JSON if it's a string
     if isinstance(current_user, str):
-        try:
-            current_user = json.loads(current_user)
-        except:
-            pass
+        try: current_user = json.loads(current_user)
+        except: pass
     
-    # Verificar que es un paciente
     if not isinstance(current_user, dict) or current_user.get('role') != 'paciente':
         return jsonify({"msg": "Acceso denegado - Solo pacientes"}), 403
     
-    paciente_id = current_user['id']
-    
-    # Filtrar por estado (próximas o historial)
-    filtro_estado = request.args.get('estado', 'proximas').lower()
-    
-    # Query base: citas del paciente autenticado
-    query = Cita.query.filter_by(id_paciente=paciente_id)
-    
-    # Filtrar por estado
-    if filtro_estado == 'proximas':
-        # Citas pendientes o en curso, ordenadas por fecha ascendente
-        query = query.filter(
-            db.or_(
-                Cita.estado == 'pendiente',
-                Cita.estado == 'confirmada',
-                Cita.estado == 'programada',
-                Cita.estado == 'en_curso'
-            )
-        ).order_by(Cita.fecha.asc(), Cita.hora.asc())
-    elif filtro_estado == 'historial':
-        # Citas completadas o canceladas, ordenadas por fecha descendente
-        query = query.filter(
-            db.or_(
-                Cita.estado == 'completada',
-                Cita.estado == 'cancelada'
-            )
-        ).order_by(Cita.fecha.desc(), Cita.hora.desc())
-    
-    citas = query.all()
+    citas = CitaService.get_citas_paciente(current_user['id'], request.args.get('estado', 'proximas'))
     
     result = []
     for cita in citas:
-        # Get psychologist info
         psicologo = cita.psicologo
-        
         result.append({
             'id_cita': cita.id,
             'fecha': str(cita.fecha),
             'hora': str(cita.hora),
             'estado': cita.estado,
-            'tipo_cita': cita.tipo_cita,  # 'videollamada', 'chat', 'presencial'
+            'tipo_cita': cita.tipo_cita,
             'precio': cita.precio_cita,
             'psicologo': {
                 'id': psicologo.id_psicologo,
@@ -561,14 +277,13 @@ def get_citas_paciente():
                 'especialidades': [esp.nombre for esp in psicologo.especialidades]
             }
         })
-    
     return jsonify(result), 200
 
 # --- Historial Clinico ---
 @main_bp.route('/historial/<int:paciente_id>', methods=['GET'])
 @jwt_required()
 def get_historial(paciente_id):
-    historial = HistorialClinico.query.filter_by(paciente_id=paciente_id).first()
+    historial = HistorialService.get_historial(paciente_id)
     if not historial:
         return jsonify({"msg": "No history found"}), 404
     return jsonify({
@@ -579,18 +294,7 @@ def get_historial(paciente_id):
 @main_bp.route('/historial', methods=['POST'])
 @jwt_required()
 def update_historial():
-    data = request.get_json()
-    paciente_id = data['id_paciente']
-    contenido = data['contenido']
-    
-    historial = HistorialClinico.query.filter_by(paciente_id=paciente_id).first()
-    if historial:
-        historial.contenido = contenido
-    else:
-        historial = HistorialClinico(paciente_id=paciente_id, contenido=contenido)
-        db.session.add(historial)
-    
-    db.session.commit()
+    HistorialService.update_historial(request.get_json())
     return jsonify({"msg": "Historial updated"}), 200
 
 # --- Informes ---
@@ -599,35 +303,19 @@ def update_historial():
 @main_bp.route('/pacientes/informes', methods=['GET'])
 @jwt_required()
 def get_informes_paciente():
-    """
-    Get all session reports for the authenticated patient
-    """
     current_user = get_jwt_identity()
-    
-    # Parse JSON if needed
     if isinstance(current_user, str):
-        try:
-            current_user = json.loads(current_user)
-        except:
-            pass
-    
-    # Verificar que es un paciente
+        try: current_user = json.loads(current_user)
+        except: pass
+        
     if not isinstance(current_user, dict) or current_user.get('role') != 'paciente':
         return jsonify({"msg": "Acceso denegado - Solo pacientes"}), 403
     
-    paciente_id = current_user['id']
-    
-    # Obtener todos los informes del paciente, ordenados por fecha descendente
-    informes = Informe.query.filter_by(
-        id_paciente=paciente_id
-    ).order_by(Informe.fecha_creacion.desc()).all()
+    informes = InformeService.get_informes_paciente(current_user['id'])
     
     result = []
     for informe in informes:
         psicologo = informe.psicologo
-        
-        # Try to find associated cita (appointment) - this is a limitation since Informe doesn't have id_cita
-        # For now, we'll return basic info
         result.append({
             'id_informe': informe.id_informe,
             'psicologo': {
@@ -640,7 +328,6 @@ def get_informes_paciente():
             'fecha_creacion': informe.fecha_creacion.strftime('%Y-%m-%d %H:%M:%S'),
             'fecha_modificacion': informe.fecha_modificacion.strftime('%Y-%m-%d %H:%M:%S') if informe.fecha_modificacion else None
         })
-    
     return jsonify(result), 200
 
 
@@ -648,26 +335,16 @@ def get_informes_paciente():
 @main_bp.route('/psicologos/informes', methods=['GET'])
 @jwt_required()
 def get_informes_psicologo():
-    """
-    Get all reports created by the authenticated psychologist
-    """
     current_user = get_jwt_identity()
     
-    # Verificar que es un psicólogo
     if not isinstance(current_user, dict) or current_user.get('role') != 'psicologo':
         return jsonify({"msg": "Acceso denegado - Solo psicólogos"}), 403
     
-    psicologo_id = current_user['id']
-    
-    # Obtener todos los informes creados por el psicólogo
-    informes = Informe.query.filter_by(
-        id_psicologo=psicologo_id
-    ).order_by(Informe.fecha_creacion.desc()).all()
+    informes = InformeService.get_informes_psicologo(current_user['id'])
     
     result = []
     for informe in informes:
         paciente = informe.paciente
-        
         result.append({
             'id_informe': informe.id_informe,
             'paciente': {
@@ -680,7 +357,6 @@ def get_informes_psicologo():
             'fecha_creacion': informe.fecha_creacion.strftime('%Y-%m-%d %H:%M:%S'),
             'fecha_modificacion': informe.fecha_modificacion.strftime('%Y-%m-%d %H:%M:%S') if informe.fecha_modificacion else None
         })
-    
     return jsonify(result), 200
 
 
@@ -688,35 +364,14 @@ def get_informes_psicologo():
 @main_bp.route('/informes/<int:id_informe>', methods=['GET'])
 @jwt_required()
 def get_informe_detalle(id_informe):
-    """
-    Get details of a specific report
-    Access control: Only the patient or psychologist involved can view
-    """
     current_user = get_jwt_identity()
-    
-    # Parse JSON if needed
     if isinstance(current_user, str):
-        try:
-            current_user = json.loads(current_user)
-        except:
-            pass
-    
-    informe = Informe.query.get(id_informe)
-    if not informe:
-        return jsonify({"msg": "Informe no encontrado"}), 404
-    
-    # Verificar permisos de acceso
-    user_id = current_user.get('id')
-    user_role = current_user.get('role')
-    
-    can_access = False
-    if user_role == 'paciente' and informe.id_paciente == user_id:
-        can_access = True
-    elif user_role == 'psicologo' and informe.id_psicologo == user_id:
-        can_access = True
-    
-    if not can_access:
-        return jsonify({"msg": "Acceso denegado a este informe"}), 403
+        try: current_user = json.loads(current_user)
+        except: pass
+
+    informe, error, status = InformeService.get_informe_detalle(id_informe, current_user.get('id'), current_user.get('role'))
+    if error:
+        return jsonify(error), status
     
     psicologo = informe.psicologo
     paciente = informe.paciente
@@ -744,40 +399,15 @@ def get_informe_detalle(id_informe):
 @main_bp.route('/psicologos/informes', methods=['POST'])
 @jwt_required()
 def create_informe():
-    """
-    Psychologist creates a session report for a patient
-    Body: {
-        "id_paciente": 1,
-        "contenido": "Session notes, diagnosis, progress evaluation..."
-    }
-    """
     current_user = get_jwt_identity()
     
-    # Verificar que es un psicólogo
     if not isinstance(current_user, dict) or current_user.get('role') != 'psicologo':
         return jsonify({"msg": "Solo psicólogos pueden crear informes"}), 403
     
-    data = request.get_json()
-    
-    # Validar campos requeridos
-    if 'id_paciente' not in data or 'contenido' not in data:
-        return jsonify({"msg": "Campos 'id_paciente' y 'contenido' son requeridos"}), 400
-    
-    # Verificar que el paciente existe
-    paciente = Paciente.query.get(data['id_paciente'])
-    if not paciente:
-        return jsonify({"msg": "Paciente no encontrado"}), 404
-    
-    # Crear el informe
-    new_informe = Informe(
-        id_paciente=data['id_paciente'],
-        id_psicologo=current_user['id'],
-        contenido=data['contenido']
-    )
-    
-    db.session.add(new_informe)
-    db.session.commit()
-    
+    new_informe, error, status = InformeService.create_informe(current_user['id'], request.get_json())
+    if error:
+        return jsonify(error), status
+        
     return jsonify({
         "msg": "Informe creado exitosamente",
         "informe": {
@@ -793,15 +423,8 @@ def create_informe():
 @jwt_required()
 def create_factura():
     data = request.get_json()
-    new_factura = Factura(
-        id_paciente=data['id_paciente'],
-        id_psicologo=data['id_psicologo'],
-        numero_factura=data.get('numero_factura'),
-        total=data.get('total')
-    )
-    db.session.add(new_factura)
-    db.session.commit()
-    return jsonify({"msg": "Factura created"}), 201
+    new_factura = FacturaService.create_factura(data)
+    return jsonify({"msg": "Factura created", "id": new_factura.id_factura}), 201
 
 # --- Notificaciones ---
 @main_bp.route('/notificaciones', methods=['GET'])
@@ -955,7 +578,7 @@ def analyze_document():
     import base64
     import os
     from openai import OpenAI
-    from app.utils.verification_copc import verify_psicologo_copc
+
     
     if 'file' not in request.files:
         return jsonify({"msg": "No file part"}), 400
@@ -971,11 +594,9 @@ def analyze_document():
     try:
         client = OpenAI(api_key=api_key)
         
-        # Leemos el archivo y lo codificamos en base64
         file_content = file.read()
         image_data = base64.b64encode(file_content).decode('utf-8')
         
-        # Paso 1: OCR con OpenAI para extraer el número
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
@@ -993,15 +614,16 @@ def analyze_document():
         extracted_data = json.loads(response.choices[0].message.content)
         numero_colegiado = extracted_data.get('numero_colegiado')
         
-        # Paso 2: Verificación real en la web del COPC
-        verification_result = verify_psicologo_copc(numero_colegiado)
+        from app.adapters.copc_adapter import CopcAdapter
+        adapter = CopcAdapter()
+        verification_result = adapter.verify(numero_colegiado)
         
         # Combinamos los resultados
         result = {
             "numero_licencia": verification_result.get("numero_colegiado") or numero_colegiado,
             "nombre": verification_result.get("nombre") or extracted_data.get('nombre_completo'),
             "verified": verification_result.get("verified", False),
-            "institucion": "COPC (Catalunya)" if verification_result.get("verified") else extracted_data.get('institucion', "Desconocida"),
+            "institucion": verification_result.get("institucion") or extracted_data.get('institucion', "Desconocida"),
             "msg": verification_result.get("msg")
         }
         
