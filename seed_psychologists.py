@@ -96,7 +96,8 @@ with app.app_context():
             nombre='Test',
             apellido='Patient',
             email='test@patient.com',
-            password_hash=generate_password_hash('password123')
+            password_hash=generate_password_hash('password123'),
+            foto_perfil='https://i.pravatar.cc/150?img=3'
         )
         db.session.add(paciente_test)
         db.session.commit()
